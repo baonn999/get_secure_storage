@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/widgets.dart' hide Key;
 import 'package:get/utils.dart';
-import 'package:cryptography/cryptography.dart';
 
 import 'storage/html.dart' if (dart.library.io) 'storage/io.dart';
 import 'value.dart';
@@ -14,23 +15,17 @@ class GetSecureStorage {
   static String kMac = 'mac';
   static String kCipherText = 'cipherText';
 
-  factory GetSecureStorage(
-      {String container = 'GetSecureStorage',
-      String? password,
-      String? path,
-      Map<String, dynamic>? initialData}) {
+  factory GetSecureStorage({String container = 'GetSecureStorage', String? password, String? path, Map<String, dynamic>? initialData}) {
     if (_sync.containsKey(container)) {
       return _sync[container]!;
     } else {
-      final instance =
-          GetSecureStorage._internal(container, path, initialData, password);
+      final instance = GetSecureStorage._internal(container, path, initialData, password);
       _sync[container] = instance;
       return instance;
     }
   }
 
-  GetSecureStorage._internal(String key,
-      [String? path, Map<String, dynamic>? initialData, String? password]) {
+  GetSecureStorage._internal(String key, [String? path, Map<String, dynamic>? initialData, String? password]) {
     _concrete = StorageImpl(key, path);
     _initialData = initialData;
 
@@ -43,8 +38,8 @@ class GetSecureStorage {
           iterations: 1000, // 1000 iterations
           bits: 128, // 256 bits = 32 bytes output
         );
-        secretKey = await pbkdf2.deriveKeyFromPassword(
-          password: password,
+        secretKey = await pbkdf2.deriveKey(
+          secretKey: SecretKey(utf8.encode(password)),
           nonce: password.runes.toList().reversed.toList(),
         );
       }
@@ -58,18 +53,14 @@ class GetSecureStorage {
   final microtask = Microtask();
 
   /// Start the storage drive. It's important to use await before calling this API, or side effects will occur.
-  static Future<bool> init(
-      {String container = 'GetSecureStorage', String? password}) {
+  static Future<bool> init({String container = 'GetSecureStorage', String? password}) {
     WidgetsFlutterBinding.ensureInitialized();
-    return GetSecureStorage(container: container, password: password)
-        .initStorage;
+    return GetSecureStorage(container: container, password: password).initStorage;
   }
 
-  static Future<bool> hasContainer(String container, [String? path]) =>
-      StorageImpl.hasContainer(container, path);
+  static Future<bool> hasContainer(String container, [String? path]) => StorageImpl.hasContainer(container, path);
 
-  static deleteContainer(String container, [String? path]) =>
-      StorageImpl.deleteContainer(container, path);
+  static deleteContainer(String container, [String? path]) => StorageImpl.deleteContainer(container, path);
 
   Future<void> _init() async {
     try {
@@ -91,16 +82,11 @@ class GetSecureStorage {
   Future<String> _decrypt(String value) async {
     if (algorithm != null) {
       final jsonPayload = json.decode(value);
-      if (jsonPayload == null ||
-          !jsonPayload.containsKey(kCipherText) ||
-          !jsonPayload.containsKey(kMac) ||
-          !jsonPayload.containsKey(kNonce)) {
+      if (jsonPayload == null || !jsonPayload.containsKey(kCipherText) || !jsonPayload.containsKey(kMac) || !jsonPayload.containsKey(kNonce)) {
         return value;
       }
 
-      if (jsonPayload[kNonce] is! String ||
-          jsonPayload[kCipherText] is! String ||
-          jsonPayload[kMac] is! String) {
+      if (jsonPayload[kNonce] is! String || jsonPayload[kCipherText] is! String || jsonPayload[kMac] is! String) {
         return '';
       }
 
@@ -110,11 +96,16 @@ class GetSecureStorage {
         mac: Mac(_hexStringToList(jsonPayload[kMac])),
       );
       try {
-        final cleartxt = await algorithm!.decryptString(
+        final cleartxt = await algorithm!.decrypt(
           secretBox,
           secretKey: secretKey!,
         );
-        return cleartxt;
+        try {
+          return utf8.decode(cleartxt);
+        } finally {
+          // Don't leave possibly sensitive data in the heap.
+          cleartxt.fillRange(0, cleartxt.length, 0);
+        }
       } catch (e) {
         rethrow;
       }
@@ -129,8 +120,9 @@ class GetSecureStorage {
 
   Future<String> _encrypt(String value) async {
     if (algorithm != null) {
-      final secretBox = await algorithm!.encryptString(
-        value,
+      final bytes = utf8.encode(value) as Uint8List;
+      final secretBox = await algorithm!.encrypt(
+        bytes,
         secretKey: secretKey!,
       );
       final jsonPayload = {
@@ -141,9 +133,7 @@ class GetSecureStorage {
       return json.encode(jsonPayload);
     } else {
       final dynamic jsonPayload = json.decode(value) ?? {};
-      if (jsonPayload.containsKey(kCipherText) ||
-          jsonPayload.containsKey(kMac) ||
-          jsonPayload.containsKey(kNonce)) {
+      if (jsonPayload.containsKey(kCipherText) || jsonPayload.containsKey(kMac) || jsonPayload.containsKey(kNonce)) {
         jsonPayload.remove(kCipherText);
         jsonPayload.remove(kMac);
         jsonPayload.remove(kNonce);
